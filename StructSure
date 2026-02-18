@@ -1,0 +1,150 @@
+from flask import Flask, request, redirect, url_for, render_template_string, send_file
+import sqlite3
+import hashlib
+import qrcode
+import io
+from datetime import datetime
+
+app = Flask(__name__)
+
+STAGES = ["Foundation", "Structure", "Roofing", "Electrical", "Occupancy"]
+
+# ---------------- DATABASE ----------------
+def init_db():
+    conn = sqlite3.connect("structsure.db")
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS buildings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            stage INTEGER,
+            status TEXT,
+            hash TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ---------------- HASH FUNCTION ----------------
+def generate_hash(data):
+    return hashlib.sha256(data.encode()).hexdigest()
+
+# ---------------- HOME ----------------
+@app.route("/")
+def home():
+    conn = sqlite3.connect("structsure.db")
+    c = conn.cursor()
+    c.execute("SELECT * FROM buildings")
+    buildings = c.fetchall()
+    conn.close()
+
+    return render_template_string("""
+    <h1> StructSure Dashboard</h1>
+    <a href="/add"Add New Building</a>
+    <hr>
+    {% for b in buildings %}
+        <div style="margin-bottom:20px;">
+            <strong>{{b[1]}}</strong><br>
+            Stage: {{ stages[b[2]] }}<br>
+            Status: {{ b[3] }}<br>
+            <a href="/approve/{{b[0]}}">Approve Next Stage</a> |
+            <a href="/verify/{{b[0]}}">Verify</a> |
+            <a href="/qr/{{b[0]}}">QR Code</a>
+        </div>
+    {% endfor %}
+    """, buildings=buildings, stages=STAGES)
+
+# ---------------- ADD BUILDING ----------------
+@app.route("/add", methods=["GET", "POST"])
+def add():
+    if request.method == "POST":
+        name = request.form["name"]
+        stage = 0
+        status = "In Progress"
+        raw_data = name + str(datetime.now())
+        record_hash = generate_hash(raw_data)
+
+        conn = sqlite3.connect("structsure.db")
+        c = conn.cursor()
+        c.execute("INSERT INTO buildings (name, stage, status, hash) VALUES (?, ?, ?, ?)",
+                  (name, stage, status, record_hash))
+        conn.commit()
+        conn.close()
+
+        return redirect(url_for("home"))
+
+    return render_template_string("""
+    <h2>Add Building</h2>
+    <form method="POST">
+        Building Name: <input type="text" name="name" required>
+        <button type="submit">Create</button>
+    </form>
+    """)
+
+# ---------------- APPROVE STAGE ----------------
+@app.route("/approve/<int:id>")
+def approve(id):
+    conn = sqlite3.connect("structsure.db")
+    c = conn.cursor()
+    c.execute("SELECT stage FROM buildings WHERE id=?", (id,))
+    current_stage = c.fetchone()[0]
+
+    if current_stage < len(STAGES) - 1:
+        new_stage = current_stage + 1
+        status = "In Progress"
+    else:
+        new_stage = current_stage
+        status = "Compliant"
+
+    raw_data = str(id) + str(datetime.now())
+    record_hash = generate_hash(raw_data)
+
+    c.execute("UPDATE buildings SET stage=?, status=?, hash=? WHERE id=?",
+              (new_stage, status, record_hash, id))
+    conn.commit()
+    conn.close()
+
+    return redirect(url_for("home"))
+
+# ---------------- VERIFY PAGE ----------------
+@app.route("/verify/<int:id>")
+def verify(id):
+    conn = sqlite3.connect("structsure.db")
+    c = conn.cursor()
+    c.execute("SELECT * FROM buildings WHERE id=?", (id,))
+    building = c.fetchone()
+    conn.close()
+
+    if not building:
+        return "Building not found"
+
+    color = "green" if building[3] == "Compliant" else "orange"
+
+    return render_template_string("""
+    <h2> Building Verification</h2>
+    <strong>Name:</strong> {{b[1]}}<br>
+    <strong>Stage:</strong> {{ stages[b[2]] }}<br>
+    <strong>Status:</strong> 
+    <span style="color:{{color}}">{{b[3]}}</span><br><br>
+    <strong>Integrity Hash:</strong><br>
+    <small>{{b[4]}}</small><br><br>
+    <a href="/">Back</a>
+    """, b=building, stages=STAGES, color=color)
+
+# ---------------- QR GENERATION ----------------
+@app.route("/qr/<int:id>")
+def generate_qr(id):
+    verify_url = request.host_url + "verify/" + str(id)
+    img = qrcode.make(verify_url)
+
+    buf = io.BytesIO()
+    img.save(buf)
+    buf.seek(0)
+
+    return send_file(buf, mimetype="image/png")
+
+# ---------------- RUN ----------------
+if __name__ == "__main__":
+    app.run(debug=True)

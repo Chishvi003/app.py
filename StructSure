@@ -4,14 +4,17 @@ import hashlib
 import qrcode
 import io
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 
 STAGES = ["Foundation", "Structure", "Roofing", "Electrical", "Occupancy"]
 
+DATABASE = "structsure.db"
+
 # ---------------- DATABASE ----------------
 def init_db():
-    conn = sqlite3.connect("structsure.db")
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS buildings (
@@ -34,15 +37,15 @@ def generate_hash(data):
 # ---------------- HOME ----------------
 @app.route("/")
 def home():
-    conn = sqlite3.connect("structsure.db")
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("SELECT * FROM buildings")
     buildings = c.fetchall()
     conn.close()
 
     return render_template_string("""
-    <h1> StructSure Dashboard</h1>
-    <a href="/add"Add New Building</a>
+    <h1>StructSure Dashboard</h1>
+    <a href="/add">Add New Building</a>
     <hr>
     {% for b in buildings %}
         <div style="margin-bottom:20px;">
@@ -66,10 +69,12 @@ def add():
         raw_data = name + str(datetime.now())
         record_hash = generate_hash(raw_data)
 
-        conn = sqlite3.connect("structsure.db")
+        conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
-        c.execute("INSERT INTO buildings (name, stage, status, hash) VALUES (?, ?, ?, ?)",
-                  (name, stage, status, record_hash))
+        c.execute(
+            "INSERT INTO buildings (name, stage, status, hash) VALUES (?, ?, ?, ?)",
+            (name, stage, status, record_hash),
+        )
         conn.commit()
         conn.close()
 
@@ -86,10 +91,16 @@ def add():
 # ---------------- APPROVE STAGE ----------------
 @app.route("/approve/<int:id>")
 def approve(id):
-    conn = sqlite3.connect("structsure.db")
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("SELECT stage FROM buildings WHERE id=?", (id,))
-    current_stage = c.fetchone()[0]
+    result = c.fetchone()
+
+    if not result:
+        conn.close()
+        return "Building not found"
+
+    current_stage = result[0]
 
     if current_stage < len(STAGES) - 1:
         new_stage = current_stage + 1
@@ -101,8 +112,10 @@ def approve(id):
     raw_data = str(id) + str(datetime.now())
     record_hash = generate_hash(raw_data)
 
-    c.execute("UPDATE buildings SET stage=?, status=?, hash=? WHERE id=?",
-              (new_stage, status, record_hash, id))
+    c.execute(
+        "UPDATE buildings SET stage=?, status=?, hash=? WHERE id=?",
+        (new_stage, status, record_hash, id),
+    )
     conn.commit()
     conn.close()
 
@@ -111,7 +124,7 @@ def approve(id):
 # ---------------- VERIFY PAGE ----------------
 @app.route("/verify/<int:id>")
 def verify(id):
-    conn = sqlite3.connect("structsure.db")
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("SELECT * FROM buildings WHERE id=?", (id,))
     building = c.fetchone()
@@ -123,7 +136,7 @@ def verify(id):
     color = "green" if building[3] == "Compliant" else "orange"
 
     return render_template_string("""
-    <h2> Building Verification</h2>
+    <h2>Building Verification</h2>
     <strong>Name:</strong> {{b[1]}}<br>
     <strong>Stage:</strong> {{ stages[b[2]] }}<br>
     <strong>Status:</strong> 
@@ -140,11 +153,12 @@ def generate_qr(id):
     img = qrcode.make(verify_url)
 
     buf = io.BytesIO()
-    img.save(buf)
+    img.save(buf, format="PNG")
     buf.seek(0)
 
     return send_file(buf, mimetype="image/png")
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
+
